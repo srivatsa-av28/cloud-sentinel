@@ -22,6 +22,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("cloud-sentinel.reporter")
 
+# AI advisor — imported lazily so reporter works without ANTHROPIC_API_KEY
+try:
+    from ai_advisor import (
+        enrich_findings_with_ai,
+        render_ai_remediation_html,
+        AI_REMEDIATION_CSS,
+    )
+    AI_ADVISOR_AVAILABLE = True
+except ImportError:
+    AI_ADVISOR_AVAILABLE = False
+    AI_REMEDIATION_CSS   = ""
+
 PROJECT_ROOT = Path(__file__).parent.parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
@@ -83,10 +95,11 @@ def severity_sort_key(finding: dict) -> int:
 # HTML Report
 # ─────────────────────────────────────────────
 
-def generate_html_report(results: dict, output_path: Path) -> Path:
+def generate_html_report(results: dict, output_path: Path, ai_enriched: bool = False) -> Path:
     """Generate a self-contained HTML report from scan results."""
     findings = collect_all_findings(results)
     findings.sort(key=severity_sort_key)
+    ai_badge = '<span class="ai-active-badge">🤖 AI Advisor Active</span>' if ai_enriched else ""
 
     s = results.get("summary", {})
     timestamp = results.get("timestamp", "unknown")
@@ -114,6 +127,8 @@ def generate_html_report(results: dict, output_path: Path) -> Path:
             color = SEVERITY_COLOR.get(sev, "#4B5563")
             emoji = SEVERITY_EMOJI.get(sev, "⚪")
             cloud = f.get("cloud", "unknown")
+            ai    = f.get("ai_remediation")
+            ai_block = render_ai_remediation_html(ai) if (ai and AI_ADVISOR_AVAILABLE) else ""
             rows_html += f"""
         <tr>
           <td><span class="cloud-badge cloud-{cloud}">{CLOUD_EMOJI.get(cloud,'')} {cloud.upper()}</span></td>
@@ -121,7 +136,10 @@ def generate_html_report(results: dict, output_path: Path) -> Path:
           <td><span class="severity-badge" style="background:{color}">{emoji} {sev}</span></td>
           <td class="resource-id">{f.get('resource_id','')}</td>
           <td>{f.get('violation','')}</td>
-          <td class="remediation">{f.get('remediation','')}</td>
+          <td class="remediation">
+            {f.get('remediation','')}
+            {ai_block}
+          </td>
         </tr>"""
 
     # Cloud breakdown rows
@@ -148,6 +166,18 @@ def generate_html_report(results: dict, output_path: Path) -> Path:
       min-height: 100vh;
       padding: 2rem;
     }}
+    .ai-active-badge {{
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      background: #1e3a5f;
+      color: #93c5fd;
+      border-radius: 9999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      border: 1px solid #1d4ed8;
+      margin-left: 0.75rem;
+    }}
+    {AI_REMEDIATION_CSS}
     .header {{
       display: flex;
       align-items: center;
@@ -284,7 +314,7 @@ def generate_html_report(results: dict, output_path: Path) -> Path:
 <body>
   <div class="header">
     <div>
-      <h1>☁️ <span>cloud-sentinel</span> — CSPM Report</h1>
+      <h1>☁️ <span>cloud-sentinel</span> — CSPM Report {ai_badge}</h1>
       <div class="meta">Run ID: {run_id} &nbsp;|&nbsp; {timestamp} &nbsp;|&nbsp; Clouds: {', '.join(c.upper() for c in clouds_scanned)}</div>
     </div>
     <span class="status-pill {'status-critical' if total > 0 else 'status-clean'}">
@@ -473,11 +503,16 @@ def send_slack_notification(results: dict, webhook_url: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="cloud-sentinel reporter")
-    parser.add_argument("--results", help="Path to results.json (default: latest run)")
-    parser.add_argument("--output", help="Output path for HTML report")
-    parser.add_argument("--slack-webhook", help="Slack Incoming Webhook URL (or set SLACK_WEBHOOK_URL env var)")
-    parser.add_argument("--no-html", action="store_true", help="Skip HTML report generation")
-    parser.add_argument("--no-slack", action="store_true", help="Skip Slack notification")
+    parser.add_argument("--results",      help="Path to results.json (default: latest run)")
+    parser.add_argument("--output",       help="Output path for HTML report")
+    parser.add_argument("--slack-webhook",help="Slack Incoming Webhook URL (or set SLACK_WEBHOOK_URL env var)")
+    parser.add_argument("--no-html",      action="store_true", help="Skip HTML report generation")
+    parser.add_argument("--no-slack",     action="store_true", help="Skip Slack notification")
+    parser.add_argument("--ai",           action="store_true", help="Enrich findings with AI remediation advice")
+    parser.add_argument("--ai-severities",nargs="+", default=["CRITICAL", "HIGH"],
+                        help="Severities to enrich with AI (default: CRITICAL HIGH)")
+    parser.add_argument("--ai-max",       type=int, default=50,
+                        help="Max findings to send to AI advisor (cost control, default: 50)")
     args = parser.parse_args()
 
     # Load results
@@ -487,11 +522,37 @@ def main():
         results = load_latest_results()
 
     run_id = results.get("run_id", "unknown")
+    ai_enriched = False
+
+    # AI enrichment
+    if args.ai:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            log.error("--ai requires ANTHROPIC_API_KEY environment variable")
+        elif not AI_ADVISOR_AVAILABLE:
+            log.error("ai_advisor module not found — ensure ai_advisor.py is in runner/")
+        else:
+            log.info("Running AI remediation advisor...")
+            all_findings = collect_all_findings(results)
+            enriched = enrich_findings_with_ai(
+                all_findings,
+                api_key,
+                severities=set(args.ai_severities),
+                max_findings=args.ai_max,
+            )
+            # Write enriched findings back into results structure
+            idx = 0
+            for r in results.get("results", []):
+                for i in range(len(r.get("findings", []))):
+                    if idx < len(enriched):
+                        r["findings"][i] = enriched[idx]
+                    idx += 1
+            ai_enriched = True
 
     # HTML report
     if not args.no_html:
         output_path = Path(args.output) if args.output else REPORTS_DIR / f"run_{run_id}" / "report.html"
-        generate_html_report(results, output_path)
+        generate_html_report(results, output_path, ai_enriched=ai_enriched)
         print(f"📄 HTML report: {output_path}")
 
     # Slack
