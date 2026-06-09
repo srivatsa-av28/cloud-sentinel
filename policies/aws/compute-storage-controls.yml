@@ -1,0 +1,71 @@
+policies:
+  - name: ebs-volume-unencrypted
+    resource: ebs
+    description: "Detect unencrypted EBS volumes"
+    filters:
+      - type: value
+        key: Encrypted
+        value: false
+    actions:
+      - type: notify
+        violation_desc: "EBS volume is not encrypted"
+        action_desc: "Enable EBS encryption by default and re-encrypt existing volumes"
+        severity: HIGH
+
+  - name: ec2-instance-imdsv2-not-required
+    resource: ec2
+    description: "Detect EC2 instances not enforcing IMDSv2"
+    filters:
+      - type: value
+        key: MetadataOptions.HttpTokens
+        op: ne
+        value: required
+    actions:
+      - type: notify
+        violation_desc: "EC2 instance does not require IMDSv2 (SSRF risk)"
+        action_desc: "Set HttpTokens to 'required' to enforce IMDSv2"
+        severity: HIGH
+
+  - name: ec2-instance-public-ip
+    resource: ec2
+    description: "Detect EC2 instances with public IP assigned"
+    filters:
+      - type: value
+        key: PublicIpAddress
+        op: ne
+        value: absent
+      - not:
+        - type: value
+          key: "tag:Exposure"
+          value: "public"
+    actions:
+      - type: notify
+        violation_desc: "EC2 instance has a public IP and is not tagged as intentionally public"
+        action_desc: "Use NAT Gateway or tag with Exposure:public if intentional"
+        severity: MEDIUM
+
+  - name: rds-instance-publicly-accessible
+    resource: rds
+    description: "Detect RDS instances that are publicly accessible"
+    filters:
+      - type: value
+        key: PubliclyAccessible
+        value: true
+    actions:
+      - type: notify
+        violation_desc: "RDS instance is publicly accessible"
+        action_desc: "Disable public accessibility and use VPC private subnets"
+        severity: CRITICAL
+
+  - name: rds-instance-no-encryption
+    resource: rds
+    description: "Detect RDS instances without encryption at rest"
+    filters:
+      - type: value
+        key: StorageEncrypted
+        value: false
+    actions:
+      - type: notify
+        violation_desc: "RDS instance storage is not encrypted"
+        action_desc: "Enable storage encryption (requires snapshot restore for existing instances)"
+        severity: HIGH

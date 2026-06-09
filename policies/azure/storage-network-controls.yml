@@ -1,0 +1,79 @@
+policies:
+  - name: azure-storage-public-blob-access
+    resource: azure.storage
+    description: "Detect Azure storage accounts with public blob access enabled"
+    filters:
+      - type: value
+        key: properties.allowBlobPublicAccess
+        value: true
+    actions:
+      - type: notify
+        violation_desc: "Azure storage account allows public blob access"
+        action_desc: "Disable AllowBlobPublicAccess on storage account"
+        severity: HIGH
+
+  - name: azure-storage-https-only
+    resource: azure.storage
+    description: "Detect Azure storage accounts not enforcing HTTPS"
+    filters:
+      - type: value
+        key: properties.supportsHttpsTrafficOnly
+        value: false
+    actions:
+      - type: notify
+        violation_desc: "Azure storage account does not enforce HTTPS-only traffic"
+        action_desc: "Enable 'Secure transfer required' on storage account"
+        severity: HIGH
+
+  - name: azure-storage-no-encryption
+    resource: azure.storage
+    description: "Detect Azure storage accounts without encryption"
+    filters:
+      - type: value
+        key: properties.encryption.services.blob.enabled
+        value: false
+    actions:
+      - type: notify
+        violation_desc: "Azure storage blob service does not have encryption enabled"
+        action_desc: "Enable encryption for Azure Blob storage"
+        severity: HIGH
+
+  - name: azure-nsg-any-any-inbound
+    resource: azure.networksecuritygroup
+    description: "Detect NSGs with any-to-any inbound rules"
+    filters:
+      - type: value
+        key: "properties.securityRules[?(@.properties.direction=='Inbound' && @.properties.access=='Allow' && @.properties.sourceAddressPrefix=='*' && @.properties.destinationPortRange=='*')]"
+        op: ne
+        value: null
+    actions:
+      - type: notify
+        violation_desc: "NSG has an inbound rule allowing all traffic from any source to any port"
+        action_desc: "Replace wildcard NSG rules with specific port and source restrictions"
+        severity: CRITICAL
+
+  - name: azure-sql-public-access
+    resource: azure.sql-server
+    description: "Detect Azure SQL servers with public endpoint enabled"
+    filters:
+      - type: value
+        key: properties.publicNetworkAccess
+        value: "Enabled"
+    actions:
+      - type: notify
+        violation_desc: "Azure SQL Server has public network access enabled"
+        action_desc: "Disable public network access and use Private Endpoint"
+        severity: HIGH
+
+  - name: azure-keyvault-soft-delete-disabled
+    resource: azure.keyvault
+    description: "Detect Key Vaults without soft-delete enabled"
+    filters:
+      - type: value
+        key: properties.enableSoftDelete
+        value: false
+    actions:
+      - type: notify
+        violation_desc: "Azure Key Vault does not have soft-delete enabled"
+        action_desc: "Enable soft-delete and purge protection on Key Vault"
+        severity: MEDIUM

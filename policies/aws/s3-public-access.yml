@@ -1,0 +1,48 @@
+policies:
+  - name: s3-bucket-public-access-blocked
+    resource: s3
+    description: "Detect S3 buckets without public access block enabled"
+    filters:
+      - or:
+        - type: value
+          key: PublicAccessBlockConfiguration.BlockPublicAcls
+          value: false
+        - type: value
+          key: PublicAccessBlockConfiguration.IgnorePublicAcls
+          value: false
+        - type: value
+          key: PublicAccessBlockConfiguration.BlockPublicPolicy
+          value: false
+        - type: value
+          key: PublicAccessBlockConfiguration.RestrictPublicBuckets
+          value: false
+    actions:
+      - type: notify
+        violation_desc: "S3 bucket does not have all public access block settings enabled"
+        action_desc: "Enable S3 Block Public Access settings"
+        severity: HIGH
+
+  - name: s3-bucket-encryption-enabled
+    resource: s3
+    description: "Detect S3 buckets without server-side encryption"
+    filters:
+      - type: bucket-encryption
+        state: false
+    actions:
+      - type: notify
+        violation_desc: "S3 bucket does not have server-side encryption enabled"
+        action_desc: "Enable SSE-S3 or SSE-KMS encryption"
+        severity: HIGH
+
+  - name: s3-bucket-logging-enabled
+    resource: s3
+    description: "Detect S3 buckets without access logging"
+    filters:
+      - type: value
+        key: Logging
+        value: absent
+    actions:
+      - type: notify
+        violation_desc: "S3 bucket does not have access logging enabled"
+        action_desc: "Enable S3 server access logging"
+        severity: MEDIUM

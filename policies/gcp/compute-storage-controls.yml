@@ -1,0 +1,97 @@
+policies:
+  - name: gcp-gcs-bucket-public-access
+    resource: gcp.bucket
+    description: "Detect GCS buckets with allUsers or allAuthenticatedUsers IAM bindings"
+    filters:
+      - type: iam-policy
+        key: "bindings[?(@.members contains 'allUsers' || @.members contains 'allAuthenticatedUsers')]"
+        op: ne
+        value: null
+    actions:
+      - type: notify
+        violation_desc: "GCS bucket grants access to allUsers or allAuthenticatedUsers"
+        action_desc: "Remove public IAM bindings from GCS bucket"
+        severity: CRITICAL
+
+  - name: gcp-gcs-bucket-no-uniform-access
+    resource: gcp.bucket
+    description: "Detect GCS buckets without uniform bucket-level access"
+    filters:
+      - type: value
+        key: iamConfiguration.uniformBucketLevelAccess.enabled
+        value: false
+    actions:
+      - type: notify
+        violation_desc: "GCS bucket does not have uniform bucket-level access enabled"
+        action_desc: "Enable uniform bucket-level access to prevent ACL-based misconfigs"
+        severity: MEDIUM
+
+  - name: gcp-firewall-open-ssh
+    resource: gcp.firewall
+    description: "Detect GCP firewall rules allowing SSH from 0.0.0.0/0"
+    filters:
+      - type: value
+        key: direction
+        value: INGRESS
+      - type: value
+        key: "allowed[?(@.IPProtocol=='tcp')].ports"
+        op: contains
+        value: "22"
+      - type: value
+        key: sourceRanges
+        op: contains
+        value: "0.0.0.0/0"
+    actions:
+      - type: notify
+        violation_desc: "GCP firewall rule allows SSH (port 22) from any IP"
+        action_desc: "Restrict SSH to specific source IPs or use Identity-Aware Proxy"
+        severity: CRITICAL
+
+  - name: gcp-firewall-open-rdp
+    resource: gcp.firewall
+    description: "Detect GCP firewall rules allowing RDP from 0.0.0.0/0"
+    filters:
+      - type: value
+        key: direction
+        value: INGRESS
+      - type: value
+        key: "allowed[?(@.IPProtocol=='tcp')].ports"
+        op: contains
+        value: "3389"
+      - type: value
+        key: sourceRanges
+        op: contains
+        value: "0.0.0.0/0"
+    actions:
+      - type: notify
+        violation_desc: "GCP firewall rule allows RDP (port 3389) from any IP"
+        action_desc: "Restrict RDP to specific source IPs or remove the rule"
+        severity: CRITICAL
+
+  - name: gcp-default-service-account-in-use
+    resource: gcp.instance
+    description: "Detect GCE instances using the default compute service account"
+    filters:
+      - type: value
+        key: "serviceAccounts[*].email"
+        op: contains
+        value: "-compute@developer.gserviceaccount.com"
+    actions:
+      - type: notify
+        violation_desc: "GCE instance is using the default compute service account"
+        action_desc: "Create a dedicated service account with minimal permissions"
+        severity: HIGH
+
+  - name: gcp-instance-serial-port-enabled
+    resource: gcp.instance
+    description: "Detect GCE instances with serial port access enabled"
+    filters:
+      - type: value
+        key: "metadata.items[?(@.key=='serial-port-enable')].value"
+        op: contains
+        value: "1"
+    actions:
+      - type: notify
+        violation_desc: "GCE instance has serial port access enabled"
+        action_desc: "Disable serial port access via instance metadata or org policy"
+        severity: MEDIUM
