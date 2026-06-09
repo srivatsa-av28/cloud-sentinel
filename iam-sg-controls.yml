@@ -1,0 +1,100 @@
+policies:
+  - name: root-account-mfa-disabled
+    resource: account
+    description: "Detect if root account MFA is not enabled"
+    filters:
+      - type: root-mfa
+        value: false
+    actions:
+      - type: notify
+        violation_desc: "Root account does not have MFA enabled"
+        action_desc: "Enable MFA on root account immediately"
+        severity: CRITICAL
+
+  - name: iam-user-no-mfa
+    resource: iam-user
+    description: "Detect IAM users without MFA enabled"
+    filters:
+      - type: mfa-device
+        value: false
+      - type: credential
+        key: password_enabled
+        value: true
+    actions:
+      - type: notify
+        violation_desc: "IAM user has console access without MFA"
+        action_desc: "Enforce MFA for all IAM users with console access"
+        severity: HIGH
+
+  - name: iam-admin-policy-directly-attached
+    resource: iam-user
+    description: "Detect IAM users with AdministratorAccess directly attached"
+    filters:
+      - type: policy
+        value: arn:aws:iam::aws:policy/AdministratorAccess
+    actions:
+      - type: notify
+        violation_desc: "IAM user has AdministratorAccess policy directly attached"
+        action_desc: "Use IAM roles and groups instead of direct policy attachment"
+        severity: HIGH
+
+  - name: iam-access-key-rotated-90-days
+    resource: iam-user
+    description: "Detect IAM access keys not rotated in 90 days"
+    filters:
+      - type: credential
+        key: access_keys.active
+        value: true
+      - type: credential
+        key: access_keys.last_rotated
+        op: greater-than
+        value: 90
+        value_type: age
+    actions:
+      - type: notify
+        violation_desc: "IAM access key has not been rotated in over 90 days"
+        action_desc: "Rotate IAM access keys every 90 days"
+        severity: MEDIUM
+
+  - name: security-group-open-ssh
+    resource: security-group
+    description: "Detect security groups allowing SSH from 0.0.0.0/0"
+    filters:
+      - type: ingress
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        Cidr: "0.0.0.0/0"
+    actions:
+      - type: notify
+        violation_desc: "Security group allows SSH (port 22) from any IP address"
+        action_desc: "Restrict SSH access to known IP ranges or use AWS Systems Manager Session Manager"
+        severity: CRITICAL
+
+  - name: security-group-open-rdp
+    resource: security-group
+    description: "Detect security groups allowing RDP from 0.0.0.0/0"
+    filters:
+      - type: ingress
+        IpProtocol: tcp
+        FromPort: 3389
+        ToPort: 3389
+        Cidr: "0.0.0.0/0"
+    actions:
+      - type: notify
+        violation_desc: "Security group allows RDP (port 3389) from any IP address"
+        action_desc: "Restrict RDP access to known IP ranges or use VPN"
+        severity: CRITICAL
+
+  - name: security-group-unrestricted-ingress
+    resource: security-group
+    description: "Detect security groups with any-port any-source ingress rules"
+    filters:
+      - type: ingress
+        IpProtocol: "-1"
+        Cidr: "0.0.0.0/0"
+    actions:
+      - type: notify
+        violation_desc: "Security group has unrestricted ingress (all ports, all IPs)"
+        action_desc: "Restrict ingress rules to specific ports and trusted IP ranges"
+        severity: CRITICAL
