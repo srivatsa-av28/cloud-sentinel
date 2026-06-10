@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-cloud-sentinel: CSPM-as-code runner
-Orchestrates Cloud Custodian policy execution across AWS, Azure, and GCP
+cloud-sentinel: main runner
+Orchestrates policy scanning across AWS, Azure, and GCP using the native engine.
+No Cloud Custodian dependency — all resource fetching is via native SDKs.
 """
 
 import os
+import sys
 import json
-import glob
-import subprocess
 import logging
 import argparse
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Optional
+
+# Ensure project root is on path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from engine import load_all_policies, PolicyEngine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,268 +25,188 @@ logging.basicConfig(
 )
 log = logging.getLogger("cloud-sentinel")
 
-PROJECT_ROOT = Path(__file__).parent.parent
 POLICIES_DIR = PROJECT_ROOT / "policies"
-REPORTS_DIR = PROJECT_ROOT / "reports"
+REPORTS_DIR  = PROJECT_ROOT / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
 
-SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
-
-def get_enabled_clouds() -> list[str]:
-    """Determine which clouds to scan based on available credentials."""
+def detect_clouds() -> list[str]:
+    """Auto-detect which clouds have credentials available."""
     enabled = []
 
     # AWS
-    if os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("AWS_PROFILE"):
+    has_aws = (
+        os.getenv("AWS_ACCESS_KEY_ID") or
+        os.getenv("AWS_PROFILE") or
+        os.getenv("AWS_ROLE_ARN")
+    )
+    if has_aws:
         enabled.append("aws")
     else:
-        log.warning("AWS credentials not found — skipping AWS scan")
+        log.warning("AWS credentials not found — skipping AWS (set AWS_ACCESS_KEY_ID or AWS_PROFILE)")
 
     # Azure
-    if os.getenv("AZURE_SUBSCRIPTION_ID") and (
+    has_azure = os.getenv("AZURE_SUBSCRIPTION_ID") and (
         os.getenv("AZURE_CLIENT_ID") or os.getenv("AZURE_USE_MSI")
-    ):
+    )
+    if has_azure:
         enabled.append("azure")
     else:
-        log.warning("Azure credentials not found — skipping Azure scan")
+        log.warning("Azure credentials not found — skipping Azure (set AZURE_SUBSCRIPTION_ID + AZURE_CLIENT_ID)")
 
     # GCP
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or os.getenv("GOOGLE_CLOUD_PROJECT"):
+    has_gcp = (
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or
+        os.getenv("GOOGLE_CLOUD_PROJECT")
+    )
+    if has_gcp:
         enabled.append("gcp")
     else:
-        log.warning("GCP credentials not found — skipping GCP scan")
+        log.warning("GCP credentials not found — skipping GCP (set GOOGLE_CLOUD_PROJECT)")
 
     return enabled
 
 
-def run_custodian_policy(policy_file: Path, cloud: str, output_dir: Path) -> dict:
-    """Run a single Cloud Custodian policy file and return results."""
-    policy_name = policy_file.stem
-    policy_output = output_dir / policy_name
+def register_collectors(engine: PolicyEngine, clouds: list[str]):
+    """Register native SDK collectors for each enabled cloud."""
 
-    cmd = [
-        "custodian", "run",
-        "--output-dir", str(policy_output),
-        str(policy_file)
-    ]
-
-    # Cloud-specific config
-    if cloud == "aws":
-        region = os.getenv("AWS_DEFAULT_REGION", "ap-south-1")
-        cmd.extend(["--region", region])
-    elif cloud == "azure":
-        subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID", "")
-        if subscription_id:
-            cmd.extend(["--subscription-id", subscription_id])
-    elif cloud == "gcp":
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "")
-        if project_id:
-            cmd.extend(["--project", project_id])
-
-    log.info(f"Running policy: {policy_file.name} [{cloud.upper()}]")
-
-    result = {
-        "policy_file": str(policy_file),
-        "cloud": cloud,
-        "status": "unknown",
-        "findings": [],
-        "error": None
-    }
-
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-
-        if proc.returncode == 0:
-            result["status"] = "success"
-            result["findings"] = parse_custodian_output(policy_output, policy_file)
-            log.info(f"  → {len(result['findings'])} finding(s)")
-        else:
-            result["status"] = "error"
-            result["error"] = proc.stderr.strip()
-            log.error(f"  → Error: {proc.stderr.strip()[:200]}")
-
-    except subprocess.TimeoutExpired:
-        result["status"] = "timeout"
-        result["error"] = "Policy execution timed out after 300s"
-        log.error(f"  → Timed out: {policy_file.name}")
-    except FileNotFoundError:
-        result["status"] = "error"
-        result["error"] = "custodian CLI not found — install c7n: pip install c7n"
-        log.error("  → custodian CLI not found")
-
-    return result
-
-
-def parse_custodian_output(output_dir: Path, policy_file: Path) -> list[dict]:
-    """Parse Cloud Custodian output JSON to extract findings."""
-    findings = []
-
-    # Load original policy to extract metadata
-    import yaml
-    try:
-        with open(policy_file) as f:
-            policy_data = yaml.safe_load(f)
-        policies_meta = {p["name"]: p for p in policy_data.get("policies", [])}
-    except Exception:
-        policies_meta = {}
-
-    # Custodian writes resources.json per policy subdirectory
-    for resources_file in output_dir.rglob("resources.json"):
-        policy_subdir = resources_file.parent.name
-        meta = policies_meta.get(policy_subdir, {})
-
+    if "aws" in clouds:
         try:
-            with open(resources_file) as f:
-                resources = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
+            from collectors import aws as aws_collector
+            region = os.getenv("AWS_DEFAULT_REGION", "ap-south-1")
+            aws_collector.register_all(engine, region=region)
+            log.info(f"AWS collectors registered (region: {region})")
+        except ImportError as e:
+            log.error(f"AWS collector import failed: {e} — install boto3")
 
-        if not resources:
-            continue
+    if "azure" in clouds:
+        try:
+            from collectors import azure as azure_collector
+            sub = os.getenv("AZURE_SUBSCRIPTION_ID")
+            azure_collector.register_all(engine, subscription_id=sub)
+            log.info(f"Azure collectors registered (subscription: {sub})")
+        except ImportError as e:
+            log.error(f"Azure collector import failed: {e} — install azure-sdk packages")
 
-        # Extract action metadata from policy
-        actions = meta.get("actions", [{}])
-        action = actions[0] if actions else {}
-
-        for resource in resources:
-            finding = {
-                "policy_name": policy_subdir,
-                "description": meta.get("description", ""),
-                "violation": action.get("violation_desc", "Policy violated"),
-                "remediation": action.get("action_desc", "Review and remediate"),
-                "severity": action.get("severity", "MEDIUM"),
-                "resource_id": (
-                    resource.get("Name") or
-                    resource.get("BucketName") or
-                    resource.get("InstanceId") or
-                    resource.get("GroupId") or
-                    resource.get("DBInstanceIdentifier") or
-                    resource.get("id") or
-                    resource.get("name") or
-                    "unknown"
-                ),
-                "resource_type": meta.get("resource", "unknown"),
-                "raw": resource
-            }
-            findings.append(finding)
-
-    return findings
-
-
-def run_all_clouds(clouds: list[str]) -> dict:
-    """Run all policies for all enabled clouds and aggregate results."""
-    run_timestamp = datetime.now(timezone.utc).isoformat()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    output_dir = REPORTS_DIR / f"run_{run_id}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    all_results = {
-        "run_id": run_id,
-        "timestamp": run_timestamp,
-        "clouds_scanned": clouds,
-        "summary": {
-            "total_policies": 0,
-            "total_findings": 0,
-            "by_severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
-            "by_cloud": {}
-        },
-        "results": []
-    }
-
-    for cloud in clouds:
-        cloud_policies_dir = POLICIES_DIR / cloud
-        if not cloud_policies_dir.exists():
-            log.warning(f"No policies directory found for {cloud}")
-            continue
-
-        cloud_output_dir = output_dir / cloud
-        cloud_output_dir.mkdir(exist_ok=True)
-
-        policy_files = list(cloud_policies_dir.glob("*.yml"))
-        log.info(f"\n{'='*50}")
-        log.info(f"Scanning {cloud.upper()} — {len(policy_files)} policy file(s)")
-        log.info(f"{'='*50}")
-
-        cloud_findings = 0
-
-        for policy_file in policy_files:
-            result = run_custodian_policy(policy_file, cloud, cloud_output_dir)
-            all_results["results"].append(result)
-            all_results["summary"]["total_policies"] += 1
-
-            for finding in result.get("findings", []):
-                cloud_findings += 1
-                all_results["summary"]["total_findings"] += 1
-                severity = finding.get("severity", "MEDIUM")
-                if severity in all_results["summary"]["by_severity"]:
-                    all_results["summary"]["by_severity"][severity] += 1
-
-        all_results["summary"]["by_cloud"][cloud] = cloud_findings
-
-    # Write raw results JSON
-    results_file = output_dir / "results.json"
-    with open(results_file, "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
-
-    log.info(f"\nRaw results written to: {results_file}")
-    return all_results
+    if "gcp" in clouds:
+        try:
+            from collectors import gcp as gcp_collector
+            project = os.getenv("GOOGLE_CLOUD_PROJECT")
+            gcp_collector.register_all(engine, project_id=project)
+            log.info(f"GCP collectors registered (project: {project})")
+        except ImportError as e:
+            log.error(f"GCP collector import failed: {e} — install google-cloud packages")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="cloud-sentinel: CSPM-as-code scanner"
+        description="cloud-sentinel: native CSPM scanner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python runner/run.py                          # auto-detect clouds from credentials
+  python runner/run.py --clouds aws             # AWS only
+  python runner/run.py --clouds aws gcp         # AWS + GCP
+  python runner/run.py --dry-run                # validate policies, no API calls
+  python runner/run.py --clouds aws --region eu-west-1
+        """
     )
-    parser.add_argument(
-        "--clouds",
-        nargs="+",
-        choices=["aws", "azure", "gcp"],
-        help="Clouds to scan (default: auto-detect from credentials)"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate policies without executing them"
-    )
+    parser.add_argument("--clouds",  nargs="+", choices=["aws", "azure", "gcp"],
+                        help="Clouds to scan (default: auto-detect from env)")
+    parser.add_argument("--region",  default=None,
+                        help="AWS region override (default: AWS_DEFAULT_REGION or ap-south-1)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Validate and list policies without making any API calls")
+    parser.add_argument("--output",  default=None,
+                        help="Path to write results.json (default: reports/run_<timestamp>/results.json)")
+    parser.add_argument("--severity-filter", nargs="+",
+                        choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                        help="Only report findings at these severities")
     args = parser.parse_args()
 
-    log.info("cloud-sentinel starting...")
+    # Region override
+    if args.region:
+        os.environ["AWS_DEFAULT_REGION"] = args.region
 
-    clouds = args.clouds or get_enabled_clouds()
-
+    # Determine which clouds to scan
+    clouds = args.clouds or detect_clouds()
     if not clouds:
         log.error("No cloud credentials found. Set credentials for at least one provider.")
-        raise SystemExit(1)
+        sys.exit(1)
 
-    log.info(f"Clouds to scan: {', '.join(c.upper() for c in clouds)}")
+    log.info(f"cloud-sentinel starting | clouds: {', '.join(c.upper() for c in clouds)}")
 
+    # Load all policies for selected clouds
+    policies = load_all_policies(str(POLICIES_DIR), clouds=clouds)
+    if not policies:
+        log.error(f"No policies found in {POLICIES_DIR} for clouds: {clouds}")
+        sys.exit(1)
+
+    log.info(f"Loaded {len(policies)} policy/policies")
+
+    # Dry run — just list policies and exit
     if args.dry_run:
-        log.info("DRY RUN mode — validating policies only")
-        for cloud in clouds:
-            policy_files = list((POLICIES_DIR / cloud).glob("*.yml"))
-            log.info(f"{cloud.upper()}: {len(policy_files)} policy file(s) found")
+        log.info("DRY RUN — policies validated, no API calls made")
+        for p in policies:
+            log.info(f"  [{p.cloud.upper()}] {p.name} ({p.severity}) → {p.resource}")
+        print(f"\n✅ {len(policies)} policies valid across {len(clouds)} cloud(s)")
         return
 
-    results = run_all_clouds(clouds)
+    # Build engine
+    engine = PolicyEngine(policies)
+    register_collectors(engine, clouds)
 
-    # Summary output
+    # Run scan
+    log.info("=" * 60)
+    log.info("Starting scan...")
+    log.info("=" * 60)
+
+    results = engine.run(clouds=clouds)
+
+    # Apply severity filter if requested
+    if args.severity_filter:
+        for r in results["results"]:
+            r["findings"] = [
+                f for f in r["findings"]
+                if f.get("severity") in args.severity_filter
+            ]
+        total = sum(len(r["findings"]) for r in results["results"])
+        results["summary"]["total_findings"] = total
+
+    # Write results
+    from datetime import datetime, timezone
+    run_id     = results["run_id"]
+    output_dir = REPORTS_DIR / f"run_{run_id}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        output_path = output_dir / "results.json"
+
+    with open(output_path, "w") as f:
+        json.dump(results, f, indent=2, default=str)
+
+    # Print summary
     s = results["summary"]
-    log.info(f"\n{'='*50}")
-    log.info(f"SCAN COMPLETE")
-    log.info(f"{'='*50}")
+    log.info("=" * 60)
+    log.info("SCAN COMPLETE")
+    log.info("=" * 60)
+    log.info(f"Elapsed:         {results.get('elapsed_seconds', 0):.1f}s")
     log.info(f"Policies run:    {s['total_policies']}")
     log.info(f"Total findings:  {s['total_findings']}")
     log.info(f"  CRITICAL: {s['by_severity']['CRITICAL']}")
     log.info(f"  HIGH:     {s['by_severity']['HIGH']}")
     log.info(f"  MEDIUM:   {s['by_severity']['MEDIUM']}")
     log.info(f"  LOW:      {s['by_severity']['LOW']}")
+    for cloud, count in s.get("by_cloud", {}).items():
+        log.info(f"  {cloud.upper()}: {count} finding(s)")
+    log.info(f"\nResults: {output_path}")
 
-    return results
+    # Exit code 1 if CRITICAL findings (useful for CI gate)
+    if s["by_severity"]["CRITICAL"] > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,60 @@
+policies:
+
+  - name: root-account-mfa-disabled
+    cloud: aws
+    resource: iam_account
+    severity: CRITICAL
+    description: "Root account does not have MFA enabled"
+    filters:
+      - field: root_mfa_enabled
+        op: eq
+        value: false
+    metadata:
+      violation: "Root account does not have MFA enabled"
+      remediation: "Enable MFA on root account via IAM Console > Security credentials"
+      mitre: "TA0006 Credential Access"
+
+  - name: iam-user-no-mfa
+    cloud: aws
+    resource: iam_user
+    severity: HIGH
+    description: "IAM user has console access but no MFA device enrolled"
+    filters:
+      - field: has_console_access
+        op: eq
+        value: true
+      - field: mfa_enabled
+        op: eq
+        value: false
+    metadata:
+      violation: "IAM user has console access without MFA"
+      remediation: "Enforce MFA for all IAM users with console access"
+      mitre: "TA0006 Credential Access"
+
+  - name: iam-admin-policy-directly-attached
+    cloud: aws
+    resource: iam_user
+    severity: HIGH
+    description: "IAM user has AdministratorAccess directly attached"
+    filters:
+      - field: has_admin_policy
+        op: eq
+        value: true
+    metadata:
+      violation: "IAM user has AdministratorAccess policy directly attached"
+      remediation: "Remove AdministratorAccess from user and use roles/groups instead"
+      mitre: "TA0004 Privilege Escalation"
+
+  - name: iam-access-key-not-rotated
+    cloud: aws
+    resource: iam_user
+    severity: MEDIUM
+    description: "IAM access key has not been rotated in over 90 days"
+    filters:
+      - field: key_rotation_needed
+        op: eq
+        value: true
+    metadata:
+      violation: "IAM access key has not been rotated in over 90 days"
+      remediation: "Rotate access keys: create new key, update consumers, deactivate old key"
+      mitre: null
