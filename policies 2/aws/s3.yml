@@ -1,0 +1,53 @@
+policies:
+
+  - name: s3-bucket-public-access-not-blocked
+    cloud: aws
+    resource: s3_bucket
+    severity: HIGH
+    description: "S3 bucket does not have all public access block settings enabled"
+    filters:
+      - or:
+        - field: block_public_acls
+          op: eq
+          value: false
+        - field: ignore_public_acls
+          op: eq
+          value: false
+        - field: block_public_policy
+          op: eq
+          value: false
+        - field: restrict_public_buckets
+          op: eq
+          value: false
+    metadata:
+      violation: "S3 bucket does not have all public access block settings enabled"
+      remediation: "Run: aws s3api put-public-access-block --bucket <name> --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+      mitre: "TA0009 Collection"
+
+  - name: s3-bucket-encryption-disabled
+    cloud: aws
+    resource: s3_bucket
+    severity: HIGH
+    description: "S3 bucket does not have server-side encryption enabled"
+    filters:
+      - field: encrypted
+        op: eq
+        value: false
+    metadata:
+      violation: "S3 bucket does not have server-side encryption enabled"
+      remediation: "Enable SSE-S3 or SSE-KMS via bucket properties"
+      mitre: "TA0009 Collection"
+
+  - name: s3-bucket-logging-disabled
+    cloud: aws
+    resource: s3_bucket
+    severity: MEDIUM
+    description: "S3 bucket does not have access logging enabled"
+    filters:
+      - field: logging_enabled
+        op: eq
+        value: false
+    metadata:
+      violation: "S3 bucket does not have server access logging enabled"
+      remediation: "Enable S3 server access logging in bucket properties"
+      mitre: null

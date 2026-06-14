@@ -1,0 +1,71 @@
+policies:
+
+  - name: azure-storage-public-blob-access
+    cloud: azure
+    resource: storage_account
+    severity: HIGH
+    description: "Azure storage account allows public blob access"
+    filters:
+      - field: allow_blob_public_access
+        op: eq
+        value: true
+    metadata:
+      violation: "Azure storage account allows public blob access"
+      remediation: "az storage account update --name <name> -g <rg> --allow-blob-public-access false"
+      mitre: "TA0009 Collection"
+
+  - name: azure-storage-https-not-enforced
+    cloud: azure
+    resource: storage_account
+    severity: HIGH
+    description: "Azure storage account does not enforce HTTPS-only traffic"
+    filters:
+      - field: https_only
+        op: eq
+        value: false
+    metadata:
+      violation: "Azure storage account does not enforce HTTPS-only traffic"
+      remediation: "az storage account update --name <name> -g <rg> --https-only true"
+      mitre: null
+
+  - name: azure-nsg-any-any-inbound
+    cloud: azure
+    resource: network_security_group
+    severity: CRITICAL
+    description: "NSG has an inbound rule allowing all traffic from any source"
+    filters:
+      - field: any_any_inbound
+        op: eq
+        value: true
+    metadata:
+      violation: "NSG has an inbound rule allowing all traffic from any source to any port"
+      remediation: "Remove wildcard NSG rules and replace with specific port/source restrictions"
+      mitre: "TA0001 Initial Access"
+
+  - name: azure-sql-public-network-access
+    cloud: azure
+    resource: sql_server
+    severity: HIGH
+    description: "Azure SQL Server has public network access enabled"
+    filters:
+      - field: public_network_access
+        op: eq
+        value: "Enabled"
+    metadata:
+      violation: "Azure SQL Server has public network access enabled"
+      remediation: "az sql server update --name <name> -g <rg> --enable-public-network false"
+      mitre: "TA0008 Lateral Movement"
+
+  - name: azure-keyvault-soft-delete-disabled
+    cloud: azure
+    resource: key_vault
+    severity: MEDIUM
+    description: "Azure Key Vault does not have soft-delete enabled"
+    filters:
+      - field: soft_delete_enabled
+        op: eq
+        value: false
+    metadata:
+      violation: "Azure Key Vault does not have soft-delete enabled"
+      remediation: "az keyvault update --name <name> -g <rg> --enable-soft-delete true --retention-days 90"
+      mitre: "TA0040 Impact"

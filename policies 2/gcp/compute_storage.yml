@@ -1,0 +1,91 @@
+policies:
+
+  - name: gcp-gcs-bucket-public-access
+    cloud: gcp
+    resource: gcs_bucket
+    severity: CRITICAL
+    description: "GCS bucket grants access to allUsers or allAuthenticatedUsers"
+    filters:
+      - field: public_access
+        op: eq
+        value: true
+    metadata:
+      violation: "GCS bucket grants access to allUsers or allAuthenticatedUsers"
+      remediation: "gcloud storage buckets remove-iam-policy-binding gs://<bucket> --member=allUsers --role=roles/storage.objectViewer"
+      mitre: "TA0009 Collection"
+
+  - name: gcp-gcs-uniform-access-disabled
+    cloud: gcp
+    resource: gcs_bucket
+    severity: MEDIUM
+    description: "GCS bucket does not have uniform bucket-level access enabled"
+    filters:
+      - field: uniform_bucket_access
+        op: eq
+        value: false
+    metadata:
+      violation: "GCS bucket does not have uniform bucket-level access enabled"
+      remediation: "gcloud storage buckets update gs://<bucket> --uniform-bucket-level-access"
+      mitre: null
+
+  - name: gcp-firewall-open-ssh
+    cloud: gcp
+    resource: firewall_rule
+    severity: CRITICAL
+    description: "GCP firewall rule allows SSH from 0.0.0.0/0"
+    filters:
+      - field: open_ssh
+        op: eq
+        value: true
+      - field: disabled
+        op: eq
+        value: false
+    metadata:
+      violation: "GCP firewall rule allows SSH (port 22) from any IP"
+      remediation: "Delete or restrict the firewall rule source range from 0.0.0.0/0 to internal CIDRs"
+      mitre: "TA0001 Initial Access"
+
+  - name: gcp-firewall-open-rdp
+    cloud: gcp
+    resource: firewall_rule
+    severity: CRITICAL
+    description: "GCP firewall rule allows RDP from 0.0.0.0/0"
+    filters:
+      - field: open_rdp
+        op: eq
+        value: true
+      - field: disabled
+        op: eq
+        value: false
+    metadata:
+      violation: "GCP firewall rule allows RDP (port 3389) from any IP"
+      remediation: "Delete or restrict the firewall rule to internal source CIDRs only"
+      mitre: "TA0001 Initial Access"
+
+  - name: gcp-default-service-account
+    cloud: gcp
+    resource: compute_instance
+    severity: HIGH
+    description: "GCE instance uses the default compute service account"
+    filters:
+      - field: using_default_sa
+        op: eq
+        value: true
+    metadata:
+      violation: "GCE instance is using the default compute service account (editor-level access)"
+      remediation: "Create a dedicated minimal service account and reassign the instance"
+      mitre: "TA0004 Privilege Escalation"
+
+  - name: gcp-serial-port-enabled
+    cloud: gcp
+    resource: compute_instance
+    severity: MEDIUM
+    description: "GCE instance has serial port access enabled"
+    filters:
+      - field: serial_port_enabled
+        op: eq
+        value: true
+    metadata:
+      violation: "GCE instance has serial port access enabled"
+      remediation: "gcloud compute instances add-metadata <name> --metadata serial-port-enable=0"
+      mitre: "TA0008 Lateral Movement"

@@ -34,6 +34,14 @@ except ImportError:
     AI_ADVISOR_AVAILABLE = False
     AI_REMEDIATION_CSS   = ""
 
+# Compliance framework definitions (for rendering posture cards)
+try:
+    from engine.compliance import FRAMEWORKS
+    COMPLIANCE_AVAILABLE = True
+except ImportError:
+    COMPLIANCE_AVAILABLE = False
+    FRAMEWORKS = {}
+
 PROJECT_ROOT = Path(__file__).parent.parent
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
@@ -75,6 +83,12 @@ def load_results_from_file(path: str) -> dict:
         return json.load(f)
 
 
+def load_drift_results(path: str) -> dict:
+    """Load a drift_results.json produced by drift/detector.py"""
+    with open(path) as f:
+        return json.load(f)
+
+
 def collect_all_findings(results: dict) -> list[dict]:
     """Flatten all findings from all policy results."""
     findings = []
@@ -92,14 +106,257 @@ def severity_sort_key(finding: dict) -> int:
 
 
 # ─────────────────────────────────────────────
+# Compliance Posture Section
+# ─────────────────────────────────────────────
+
+GRADE_COLOR = {
+    "A": "#16a34a",
+    "B": "#65a30d",
+    "C": "#d97706",
+    "D": "#ea580c",
+    "F": "#dc2626",
+}
+
+
+def render_compliance_section(results: dict) -> str:
+    """Render the compliance posture dashboard (PCI DSS, ISO 27001, SOC 2, HIPAA, CPS 234)."""
+    compliance = results.get("compliance")
+    if not compliance:
+        return ""
+
+    cards = ""
+    for fw_id, fw in compliance.items():
+        grade = fw.get("grade", "?")
+        score = fw.get("score", 0)
+        color = GRADE_COLOR.get(grade, "#94a3b8")
+        fw_color = fw.get("color", "#38bdf8")
+
+        failing = fw.get("failing_controls", [])
+        failing_str = ", ".join(failing[:6]) + ("…" if len(failing) > 6 else "") if failing else "None"
+
+        cards += f"""
+        <div class="compliance-card">
+          <div class="cc-header">
+            <span class="cc-name" style="color:{fw_color}">{fw.get('framework_short','')}</span>
+            <span class="cc-grade" style="background:{color}">{grade}</span>
+          </div>
+          <div class="cc-score-row">
+            <div class="cc-score-bar">
+              <div class="cc-score-fill" style="width:{score}%; background:{color}"></div>
+            </div>
+            <span class="cc-score-val">{score}%</span>
+          </div>
+          <div class="cc-meta">
+            <span>{fw.get('findings_count',0)} finding(s)</span>
+            <span>{len(failing)}/{fw.get('total_controls',0)} controls failing</span>
+          </div>
+          <div class="cc-controls">
+            <span class="cc-controls-label">Failing controls:</span> {failing_str}
+          </div>
+        </div>"""
+
+    return f"""
+  <p class="section-title">Compliance Posture</p>
+  <div class="compliance-grid">
+    {cards}
+  </div>"""
+
+
+COMPLIANCE_CSS = """
+  .compliance-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .compliance-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 0.75rem;
+    padding: 1.1rem 1.25rem;
+  }
+  .cc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.65rem;
+  }
+  .cc-name { font-size: 0.85rem; font-weight: 700; letter-spacing: 0.02em; }
+  .cc-grade {
+    width: 1.6rem; height: 1.6rem;
+    border-radius: 0.375rem;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 800; color: #0f172a;
+  }
+  .cc-score-row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
+  .cc-score-bar {
+    flex: 1; height: 6px; border-radius: 9999px;
+    background: #0f172a; overflow: hidden;
+  }
+  .cc-score-fill { height: 100%; border-radius: 9999px; }
+  .cc-score-val { font-size: 0.78rem; font-weight: 700; color: #cbd5e1; font-family: monospace; }
+  .cc-meta {
+    display: flex; justify-content: space-between;
+    font-size: 0.7rem; color: #64748b; margin-bottom: 0.5rem;
+  }
+  .cc-controls {
+    font-size: 0.7rem; color: #94a3b8;
+    background: #0f172a; border-radius: 0.375rem;
+    padding: 0.5rem 0.6rem; line-height: 1.5;
+  }
+  .cc-controls-label { color: #64748b; font-weight: 600; }
+"""
+
+
+# ─────────────────────────────────────────────
+# PSPM Drift Section
+# ─────────────────────────────────────────────
+
+DRIFT_TYPE_LABEL = {
+    "unmanaged": ("🛑 Unmanaged", "#dc2626", "Created outside Terraform"),
+    "drifted":   ("⚠ Drifted",   "#d97706", "Attributes diverged from IaC"),
+    "ghost":     ("👻 Ghost",     "#64748b", "In Terraform, missing in cloud"),
+}
+
+
+def render_drift_section(drift_results: dict | None) -> str:
+    """Render the PSPM drift detection section."""
+    if not drift_results:
+        return ""
+
+    s = drift_results.get("summary", {})
+    findings = drift_results.get("findings", [])
+    findings = sorted(findings, key=severity_sort_key)
+
+    by_drift = s.get("by_drift_type", {"unmanaged": 0, "drifted": 0, "ghost": 0})
+    by_owner = s.get("by_owner", [])
+    total    = s.get("total_findings", 0)
+    tfstate  = drift_results.get("tfstate_path", "")
+
+    # Stat cards
+    stat_cards = f"""
+    <div class="stat-card" style="border-top:2px solid #dc2626">
+      <div class="value" style="color:#fca5a5">{by_drift.get('unmanaged',0)}</div>
+      <div class="label">Unmanaged (bypassed Terraform)</div>
+    </div>
+    <div class="stat-card" style="border-top:2px solid #d97706">
+      <div class="value" style="color:#fdba74">{by_drift.get('drifted',0)}</div>
+      <div class="label">Drifted from IaC</div>
+    </div>
+    <div class="stat-card" style="border-top:2px solid #64748b">
+      <div class="value" style="color:#cbd5e1">{by_drift.get('ghost',0)}</div>
+      <div class="label">Ghost (in TF, not in cloud)</div>
+    </div>"""
+
+    # Owner table
+    owner_rows = ""
+    for o in by_owner[:10]:
+        bs = o.get("by_severity", {})
+        owner_rows += f"""
+        <tr>
+          <td class="owner-name">{o['owner']}</td>
+          <td>{o['total']}</td>
+          <td style="color:#f87171">{bs.get('CRITICAL',0)}</td>
+          <td style="color:#fb923c">{bs.get('HIGH',0)}</td>
+          <td style="color:#fbbf24">{bs.get('MEDIUM',0)}</td>
+        </tr>"""
+
+    # Findings table
+    rows_html = ""
+    if not findings:
+        rows_html = """
+        <tr><td colspan="7" style="text-align:center; color:#16a34a; padding:2rem; font-weight:600;">
+          ✅ No drift detected — cloud state matches Terraform
+        </td></tr>"""
+    else:
+        for f in findings:
+            sev = f.get("severity", "LOW")
+            color = SEVERITY_COLOR.get(sev, "#4B5563")
+            emoji = SEVERITY_EMOJI.get(sev, "⚪")
+            cloud = f.get("cloud", "unknown")
+            dtype = f.get("drift_type", "")
+            label, dcolor, _ = DRIFT_TYPE_LABEL.get(dtype, (dtype, "#94a3b8", ""))
+            tf_addr = f.get("tf_address") or "—"
+
+            rows_html += f"""
+        <tr>
+          <td><span class="drift-type-badge" style="color:{dcolor}; border-color:{dcolor}">{label}</span></td>
+          <td><span class="cloud-badge cloud-{cloud}">{CLOUD_EMOJI.get(cloud,'')} {cloud.upper()}</span></td>
+          <td><span class="severity-badge" style="background:{color}">{emoji} {sev}</span></td>
+          <td class="resource-id">{f.get('resource_id','')}</td>
+          <td class="owner-name">{f.get('owner','unassigned')}</td>
+          <td>{f.get('violation','')}</td>
+          <td class="remediation"><code>{f.get('remediation','')}</code>{
+            f'<div class="tf-address">📍 {tf_addr}</div>' if tf_addr != "—" else ''
+          }</td>
+        </tr>"""
+
+    return f"""
+  <p class="section-title">Platform Security Posture Management (PSPM)</p>
+  <div class="meta" style="margin-bottom:1rem;">
+    Terraform state: <code>{tfstate}</code> &nbsp;|&nbsp; {total} drift finding(s) across {', '.join(c.upper() for c in drift_results.get('clouds_scanned', []))}
+  </div>
+
+  <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom:1.5rem;">
+    {stat_cards}
+  </div>
+
+  <p class="section-title">Findings by Owner</p>
+  <div class="findings-table-wrap" style="margin-bottom:2rem;">
+    <table class="findings">
+      <thead><tr><th>Owner / Team</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th></tr></thead>
+      <tbody>{owner_rows}</tbody>
+    </table>
+  </div>
+
+  <p class="section-title">Drift Findings ({total})</p>
+  <div class="findings-table-wrap">
+    <table class="findings">
+      <thead>
+        <tr>
+          <th>Type</th><th>Cloud</th><th>Severity</th><th>Resource</th><th>Owner</th><th>Issue</th><th>Remediation</th>
+        </tr>
+      </thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>"""
+
+
+DRIFT_CSS = """
+  .drift-type-badge {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 0.375rem;
+    border: 1px solid;
+    font-size: 0.68rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .owner-name {
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: #fbbf24;
+  }
+  .tf-address {
+    margin-top: 0.3rem;
+    font-size: 0.7rem;
+    color: #64748b;
+    font-family: monospace;
+  }
+"""
+
+
+# ─────────────────────────────────────────────
 # HTML Report
 # ─────────────────────────────────────────────
 
-def generate_html_report(results: dict, output_path: Path, ai_enriched: bool = False) -> Path:
+def generate_html_report(results: dict, output_path: Path, ai_enriched: bool = False, drift_results: dict | None = None) -> Path:
     """Generate a self-contained HTML report from scan results."""
     findings = collect_all_findings(results)
     findings.sort(key=severity_sort_key)
     ai_badge = '<span class="ai-active-badge">🤖 AI Advisor Active</span>' if ai_enriched else ""
+    compliance_badge = '<span class="ai-active-badge" style="background:#1a3320;color:#86efac;border-color:#16a34a">📋 Compliance Mapped</span>' if results.get("compliance") else ""
+    drift_badge = '<span class="ai-active-badge" style="background:#2e1a0a;color:#fdba74;border-color:#d97706">🛰 PSPM Drift Scan</span>' if drift_results else ""
 
     s = results.get("summary", {})
     timestamp = results.get("timestamp", "unknown")
@@ -178,6 +435,8 @@ def generate_html_report(results: dict, output_path: Path, ai_enriched: bool = F
       margin-left: 0.75rem;
     }}
     {AI_REMEDIATION_CSS}
+    {COMPLIANCE_CSS}
+    {DRIFT_CSS}
     .header {{
       display: flex;
       align-items: center;
@@ -314,7 +573,7 @@ def generate_html_report(results: dict, output_path: Path, ai_enriched: bool = F
 <body>
   <div class="header">
     <div>
-      <h1>☁️ <span>cloud-sentinel</span> — CSPM Report {ai_badge}</h1>
+      <h1>☁️ <span>cloud-sentinel</span> — CSPM Report {ai_badge}{compliance_badge}{drift_badge}</h1>
       <div class="meta">Run ID: {run_id} &nbsp;|&nbsp; {timestamp} &nbsp;|&nbsp; Clouds: {', '.join(c.upper() for c in clouds_scanned)}</div>
     </div>
     <span class="status-pill {'status-critical' if total > 0 else 'status-clean'}">
@@ -335,7 +594,7 @@ def generate_html_report(results: dict, output_path: Path, ai_enriched: bool = F
   <div class="cloud-breakdown">
     <table>{cloud_rows}</table>
   </div>
-
+{render_compliance_section(results)}
   <p class="section-title">Findings ({total})</p>
   <div class="findings-table-wrap">
     <table class="findings">
@@ -354,10 +613,10 @@ def generate_html_report(results: dict, output_path: Path, ai_enriched: bool = F
       </tbody>
     </table>
   </div>
-
+{render_drift_section(drift_results)}
   <div class="footer">
-    Generated by <a href="https://github.com/vatsa/cloud-sentinel">cloud-sentinel</a> &mdash;
-    CSPM-as-code using <a href="https://cloudcustodian.io">Cloud Custodian</a>
+    Generated by <a href="https://github.com/vatsa/cloud-sentinel">cloud-sentinel</a> —
+    native CSPM + Compliance Mapping + PSPM drift detection, powered by Claude AI
   </div>
 </body>
 </html>"""
@@ -513,6 +772,8 @@ def main():
                         help="Severities to enrich with AI (default: CRITICAL HIGH)")
     parser.add_argument("--ai-max",       type=int, default=50,
                         help="Max findings to send to AI advisor (cost control, default: 50)")
+    parser.add_argument("--drift-results", default=None,
+                        help="Path to drift_results.json from drift/detector.py — adds PSPM section to report")
     args = parser.parse_args()
 
     # Load results
@@ -549,10 +810,19 @@ def main():
                     idx += 1
             ai_enriched = True
 
+    # Drift / PSPM results
+    drift_results = None
+    if args.drift_results:
+        try:
+            drift_results = load_drift_results(args.drift_results)
+            log.info(f"Loaded drift results: {drift_results['summary']['total_findings']} finding(s)")
+        except Exception as e:
+            log.error(f"Failed to load drift results from {args.drift_results}: {e}")
+
     # HTML report
     if not args.no_html:
         output_path = Path(args.output) if args.output else REPORTS_DIR / f"run_{run_id}" / "report.html"
-        generate_html_report(results, output_path, ai_enriched=ai_enriched)
+        generate_html_report(results, output_path, ai_enriched=ai_enriched, drift_results=drift_results)
         print(f"📄 HTML report: {output_path}")
 
     # Slack
