@@ -1,0 +1,99 @@
+policies:
+
+  - name: security-group-open-ssh
+    cloud: aws
+    resource: security_group
+    severity: CRITICAL
+    description: "Security group allows SSH from 0.0.0.0/0"
+    filters:
+      - field: open_ssh
+        op: eq
+        value: true
+    metadata:
+      violation: "Security group allows SSH (port 22) from any IP"
+      remediation: "Restrict SSH to known CIDR ranges or use AWS Systems Manager Session Manager"
+      mitre: "TA0001 Initial Access"
+
+  - name: security-group-open-rdp
+    cloud: aws
+    resource: security_group
+    severity: CRITICAL
+    description: "Security group allows RDP from 0.0.0.0/0"
+    filters:
+      - field: open_rdp
+        op: eq
+        value: true
+    metadata:
+      violation: "Security group allows RDP (port 3389) from any IP"
+      remediation: "Restrict RDP to known CIDR ranges or use VPN"
+      mitre: "TA0001 Initial Access"
+
+  - name: security-group-unrestricted-ingress
+    cloud: aws
+    resource: security_group
+    severity: CRITICAL
+    description: "Security group allows all ports from 0.0.0.0/0"
+    filters:
+      - field: open_all_ports
+        op: eq
+        value: true
+    metadata:
+      violation: "Security group has unrestricted ingress on all ports"
+      remediation: "Replace wildcard ingress rule with specific port and CIDR restrictions"
+      mitre: "TA0001 Initial Access"
+
+  - name: ec2-imdsv2-not-required
+    cloud: aws
+    resource: ec2_instance
+    severity: HIGH
+    description: "EC2 instance does not enforce IMDSv2"
+    filters:
+      - field: imdsv2_required
+        op: eq
+        value: false
+    metadata:
+      violation: "EC2 instance does not require IMDSv2 (SSRF risk via IMDSv1)"
+      remediation: "aws ec2 modify-instance-metadata-options --instance-id <id> --http-tokens required"
+      mitre: "TA0006 Credential Access"
+
+  - name: ebs-volume-unencrypted
+    cloud: aws
+    resource: ebs_volume
+    severity: HIGH
+    description: "EBS volume is not encrypted at rest"
+    filters:
+      - field: encrypted
+        op: eq
+        value: false
+    metadata:
+      violation: "EBS volume is not encrypted"
+      remediation: "Enable EBS encryption by default in account settings; re-encrypt existing volumes via snapshot"
+      mitre: "TA0009 Collection"
+
+  - name: rds-publicly-accessible
+    cloud: aws
+    resource: rds_instance
+    severity: CRITICAL
+    description: "RDS instance is publicly accessible"
+    filters:
+      - field: publicly_accessible
+        op: eq
+        value: true
+    metadata:
+      violation: "RDS instance is publicly accessible over the internet"
+      remediation: "aws rds modify-db-instance --db-instance-identifier <id> --no-publicly-accessible --apply-immediately"
+      mitre: "TA0008 Lateral Movement"
+
+  - name: rds-storage-not-encrypted
+    cloud: aws
+    resource: rds_instance
+    severity: HIGH
+    description: "RDS instance storage is not encrypted"
+    filters:
+      - field: storage_encrypted
+        op: eq
+        value: false
+    metadata:
+      violation: "RDS instance storage is not encrypted at rest"
+      remediation: "Encryption can only be enabled on a new instance; restore from snapshot with encryption enabled"
+      mitre: "TA0009 Collection"
